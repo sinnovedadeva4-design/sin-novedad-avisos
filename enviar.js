@@ -30,6 +30,13 @@ async function enviarA(nombre, title, body) {
   return r.successCount;
 }
 
+const movsDe = (c) => Array.isArray(c.movs) ? c.movs : [
+  c.diaSolicitante && { dia: c.diaSolicitante, t: c.tipoSolicitante, sale: c.solicita, entra: c.otro },
+  c.diaOtro && { dia: c.diaOtro, t: c.tipoOtro, sale: c.otro, entra: c.solicita },
+  c.extra && { dia: c.extra.dia, t: c.extra.tipo, sale: c.extra.de, entra: c.extra.a },
+].filter(Boolean);
+const esTriple = (c) => Array.isArray(c.movs);
+
 // Respuestas y peticiones de cambio de los últimos 2 días que aún no se han avisado.
 async function avisosCambios(ahora) {
   const desde = new Date(ahora.getTime() - 2 * 864e5).toISOString();
@@ -38,22 +45,61 @@ async function avisosCambios(ahora) {
   for (const doc of resp.docs) {
     const c = doc.data();
     if (c.avisadoResp || !["aceptado", "rechazado"].includes(c.estado)) continue;
-    const dia = c.diaSolicitante || c.diaOtro, t = c.diaSolicitante ? c.tipoSolicitante : c.tipoOtro;
-    const quien = c.porAdmin && c.estado === "aceptado" ? "El administrador" : c.otro;
-    n += c.estado === "aceptado"
-      ? await enviarA(c.solicita, "Cambio aceptado ✅", `${quien} ha aceptado tu cambio de la ${servicio(t)} del ${fechaCorta(dia)}. ¡Sin novedad!`)
-      : await enviarA(c.solicita, "Cambio rechazado ❌", `${c.otro} ha rechazado tu cambio de la ${servicio(t)} del ${fechaCorta(dia)}.`);
+    const m0 = movsDe(c)[0] || {}, quien = c.porAdmin && c.estado === "aceptado" ? "El administrador" : c.otro;
+    if (esTriple(c)) {
+      for (const p of [c.solicita, c.otro, c.tercero]) {
+        n += c.estado === "aceptado"
+          ? await enviarA(p, "Cambio a tres aceptado ✅", `El cambio a tres entre ${c.solicita}, ${c.otro} y ${c.tercero} ya está hecho. ¡Sin novedad!`)
+          : (p === c.rechazadoPor ? 0 : await enviarA(p, "Cambio a tres rechazado ❌", `${c.rechazadoPor || "Alguien"} ha rechazado el cambio a tres.`));
+      }
+    } else {
+      n += c.estado === "aceptado"
+        ? await enviarA(c.solicita, "Cambio aceptado ✅", `${quien} ha aceptado tu cambio de la ${servicio(m0.t)} del ${fechaCorta(m0.dia)}. ¡Sin novedad!`)
+        : await enviarA(c.solicita, "Cambio rechazado ❌", `${c.rechazadoPor || c.otro} ha rechazado tu cambio de la ${servicio(m0.t)} del ${fechaCorta(m0.dia)}.`);
+    }
     await doc.ref.update({ avisadoResp: true });
   }
   const nuevas = await db.collection("cambios").where("creado", ">=", desde).get();
   for (const doc of nuevas.docs) {
     const c = doc.data();
     if (c.avisadoPend || c.estado !== "pendiente") continue;
-    const dia = c.diaOtro || c.diaSolicitante, t = c.diaOtro ? c.tipoOtro : c.tipoSolicitante;
-    n += await enviarA(c.otro, "Te piden un cambio 🔄", `${c.solicita} te pide un cambio por tu ${servicio(t)} del ${fechaCorta(dia)}. Entra en la app para aceptarlo o rechazarlo.`);
+    const nota = c.nota ? ` 📝 «${c.nota}»` : "";
+    if (esTriple(c)) {
+      for (const p of [c.otro, c.tercero]) {
+        const da = movsDe(c).find((m) => m.sale === p) || {};
+        n += await enviarA(p, "Te proponen un cambio a tres 🔁", `${c.solicita} propone un cambio a tres con ${p === c.otro ? c.tercero : c.otro}: tú das tu ${servicio(da.t)} del ${fechaCorta(da.dia)}. Entra para verlo.${nota}`);
+      }
+    } else {
+      const m = movsDe(c).find((x) => x.sale === c.otro) || movsDe(c)[0] || {};
+      n += await enviarA(c.otro, "Te piden un cambio 🔄", `${c.solicita} te pide un cambio por tu ${servicio(m.t)} del ${fechaCorta(m.dia)}. Entra en la app para aceptarlo o rechazarlo.${nota}`);
+    }
     await doc.ref.update({ avisadoPend: true });
   }
   console.log(`✔ Avisos de cambios enviados: ${n}`);
+}
+
+// Avisa al administrador si alguien queda con servicio el día que sale de guardia (una vez por fallo).
+async function avisosFallos(ahora) {
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
+  const q = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">=", hoyK).get();
+  const g = {}; q.docs.forEach((d) => { g[d.id] = (d.data() || {}).s || {}; });
+  const prev = (k) => { const d = new Date(k + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+  const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
+  if (ap.empty) return;
+  const yo = ap.docs[0].data().nombre;
+  let n = 0;
+  for (const [k, s] of Object.entries(g)) {
+    const ant = g[prev(k)];
+    if (!ant) continue;
+    for (const [p, t] of Object.entries(s)) {
+      if (!["G", "I", "I/E"].includes(t) || ant[p] !== "G") continue;
+      const id = `${k}_${p}`.replace(/[^\w-]/g, "_"), ref = db.doc("fallosAvisados/" + id);
+      if ((await ref.get()).exists) continue;
+      n += await enviarA(yo, "⚠️ Fallo en el cuadrante", `${p} sale de guardia el ${fechaCorta(k)} y tiene ${t === "G" ? "guardia" : "imaginaria"} ese día. Revísalo en la app.`);
+      await ref.set({ fecha: ahora.toISOString() });
+    }
+  }
+  if (n) console.log(`✔ Avisos de fallos al administrador: ${n}`);
 }
 
 async function main() {
@@ -68,6 +114,7 @@ async function main() {
   }
   const ahora = new Date();
   await avisosCambios(ahora);
+  await avisosFallos(ahora).catch((e) => console.error("Fallos:", e.message || e));
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
   if (hora < 21 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h)."); return; }
   const hoy = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
