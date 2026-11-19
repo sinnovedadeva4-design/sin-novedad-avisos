@@ -1,0 +1,27 @@
+name: Avisos Sin Novedad
+
+on:
+  schedule:
+    # Cada 10 minutos: avisos de cambios. El recordatorio de la víspera solo sale entre las 20:00 y las 22:59 de España (una vez al día).
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      prueba:
+        description: "¿Enviar solo un aviso de prueba a tu móvil? (si / no)"
+        required: true
+        default: "si"
+
+jobs:
+  avisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --omit=dev --no-audit --no-fund
+      - run: node enviar.js
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SA }}
+          PRUEBA: ${{ github.event.inputs.prueba }}
