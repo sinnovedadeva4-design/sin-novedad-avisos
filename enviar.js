@@ -102,6 +102,42 @@ async function avisoPublicado(ahora) {
   console.log(`✔ Aviso de cuadrante publicado (${nuevos.join(", ")}): ${n}`);
 }
 
+// Comunicados nuevos del mando: aviso a todos (una vez por comunicado).
+async function avisoComunicados(ahora) {
+  const desde = new Date(ahora.getTime() - 2 * 864e5).toISOString();
+  const q = await db.collection("comunicados").where("fecha", ">=", desde).get();
+  const nuevos = q.docs.filter((d) => !(d.data() || {}).avisado);
+  if (!nuevos.length) return;
+  const push = await db.collection("push").get();
+  const nombres = [...new Set(push.docs.map((x) => (x.data() || {}).nombre).filter(Boolean))];
+  let n = 0;
+  for (const d of nuevos) {
+    const c = d.data(), txt = String(c.texto || "");
+    for (const p of nombres) n += await enviarA(p, "📢 Comunicado", txt.length > 180 ? txt.slice(0, 177) + "…" : txt);
+    await d.ref.update({ avisado: true });
+  }
+  console.log(`✔ Comunicados avisados: ${nuevos.length} (${n} envíos)`);
+}
+
+// Día 24 (desde las 10:00): "mañana se cierran los cambios" a todos, si ya está colgado el cuadrante del mes siguiente.
+async function avisoCierre(ahora) {
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
+  const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
+  if (hoyK.slice(8) !== "24" || hora < 10) return;
+  const [y, m] = hoyK.split("-").map(Number), sig = `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}`;
+  const ref = db.doc("avisosCierre/" + sig);
+  if ((await ref.get()).exists) return;
+  const hay = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">=", sig + "-01").limit(1).get();
+  if (hay.empty || !hay.docs[0].id.startsWith(sig)) { console.log("Día 24: aún no hay cuadrante de", sig); return; }
+  const mesN = MESES[Number(sig.slice(5)) - 1], actN = MESES[m - 1];
+  const push = await db.collection("push").get();
+  const nombres = [...new Set(push.docs.map((x) => (x.data() || {}).nombre).filter(Boolean))];
+  let n = 0;
+  for (const p of nombres) n += await enviarA(p, "⏰ Mañana se cierran los cambios", `Mañana, 25 de ${actN}, es el último día para pedir cambios del cuadrante de ${mesN}.`);
+  await ref.set({ fecha: ahora.toISOString(), enviados: n });
+  console.log(`✔ Aviso de cierre (${sig}): ${n}`);
+}
+
 // Avisa al administrador si alguien queda con servicio el día que sale de guardia (una vez por fallo).
 async function avisosFallos(ahora) {
   const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
@@ -149,6 +185,8 @@ async function main() {
   await avisosCambios(ahora);
   await avisosFallos(ahora).catch((e) => console.error("Fallos:", e.message || e));
   await avisoPublicado(ahora).catch((e) => console.error("Publicado:", e.message || e));
+  await avisoComunicados(ahora).catch((e) => console.error("Comunicados:", e.message || e));
+  await avisoCierre(ahora).catch((e) => console.error("Cierre:", e.message || e));
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
   if (hora < 21 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h)."); return; }
   const hoy = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
