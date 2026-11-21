@@ -78,6 +78,30 @@ async function avisosCambios(ahora) {
   console.log(`✔ Avisos de cambios enviados: ${n}`);
 }
 
+// Cuando se publica un cuadrante nuevo: aviso a todos con los días que quedan hasta el 25 del mes anterior.
+const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+async function avisoPublicado(ahora) {
+  const ref = db.doc("app/publicado"), snap = await ref.get();
+  if (!snap.exists) return;
+  const d = snap.data() || {}, avisados = d.avisados || [];
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" }), cur = hoyK.slice(0, 7);
+  const nuevos = (d.meses || []).filter((m) => m > cur && !avisados.includes(m)).sort();
+  if (!nuevos.length) return;
+  const m = nuevos[0], [y, mo] = m.split("-").map(Number);
+  const lim = new Date(Date.UTC(y, mo - 2, 25)).toISOString().slice(0, 10);
+  const dias = Math.round((Date.parse(lim) - Date.parse(hoyK)) / 864e5);
+  const mesN = MESES[mo - 1], limN = MESES[(mo + 10) % 12];
+  const body = dias < 0 ? `Ya está colgado el cuadrante de ${mesN}. Entra en la app para verlo.`
+    : dias === 0 ? `Ya está el cuadrante de ${mesN}. Hoy, 25 de ${limN}, es el último día para pedir cambios.`
+    : `Ya está el cuadrante de ${mesN}. Tenéis hasta el 25 de ${limN} para pedir cambios: os quedan ${dias} día${dias > 1 ? "s" : ""}.`;
+  const q = await db.collection("push").get();
+  const nombres = [...new Set(q.docs.map((x) => (x.data() || {}).nombre).filter(Boolean))];
+  let n = 0;
+  for (const p of nombres) n += await enviarA(p, `📅 Cuadrante de ${mesN} publicado`, body);
+  await ref.update({ avisados: [...avisados, ...nuevos] });
+  console.log(`✔ Aviso de cuadrante publicado (${nuevos.join(", ")}): ${n}`);
+}
+
 // Avisa al administrador si alguien queda con servicio el día que sale de guardia (una vez por fallo).
 async function avisosFallos(ahora) {
   const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
@@ -115,6 +139,7 @@ async function main() {
   const ahora = new Date();
   await avisosCambios(ahora);
   await avisosFallos(ahora).catch((e) => console.error("Fallos:", e.message || e));
+  await avisoPublicado(ahora).catch((e) => console.error("Publicado:", e.message || e));
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
   if (hora < 21 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h)."); return; }
   const hoy = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
