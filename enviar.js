@@ -126,6 +126,15 @@ async function avisosFallos(ahora) {
   if (n) console.log(`✔ Avisos de fallos al administrador: ${n}`);
 }
 
+const FRASES_I = [
+  "Que no se te olvide: mañana te toca imaginaria. ¡Sin novedad! 🫡",
+  "Mañana imaginaria: móvil con batería y el uniforme a mano 🔋",
+  "Imaginaria mañana: duerme bien hoy 😴",
+  "Mañana te toca estar disponible: nada de planes lejos 📍",
+  "Imaginaria a la vista: déjalo todo preparado esta noche 🎒",
+  "Mañana imaginaria. Que no suene el teléfono… pero si suena, estás listo 📞",
+];
+
 async function main() {
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
@@ -155,7 +164,7 @@ async function main() {
   for (const doc of push.docs) {
     const p = doc.data(), t = p && p.token && s[p.nombre];
     if (t === "G") mensajes.push(msg(p.token, "🪖 Mañana tienes guardia", frase()));
-    else if (t === "I") mensajes.push(msg(p.token, "🌙 Mañana tienes imaginaria", "Que no se te olvide: mañana te toca imaginaria. ¡Sin novedad! 🫡"));
+    else if (t && /(^|\/)I($|\/)|^I\//.test(t)) mensajes.push(msg(p.token, "🌙 Mañana tienes imaginaria", FRASES_I[Math.floor(Math.random() * FRASES_I.length)]));
     else continue;
     refs.push(doc.ref);
   }
