@@ -33,6 +33,8 @@ async function enviarA(nombre, title, body) {
 const movsDe = (c) => Array.isArray(c.movs) ? c.movs : [
   c.diaSolicitante && { dia: c.diaSolicitante, t: c.tipoSolicitante, sale: c.solicita, entra: c.otro },
   c.diaOtro && { dia: c.diaOtro, t: c.tipoOtro, sale: c.otro, entra: c.solicita },
+  c.par && { dia: c.par.diaSolicitante, t: c.par.tipoSolicitante, sale: c.solicita, entra: c.otro },
+  c.par && { dia: c.par.diaOtro, t: c.par.tipoOtro, sale: c.otro, entra: c.solicita },
   c.extra && { dia: c.extra.dia, t: c.extra.tipo, sale: c.extra.de, entra: c.extra.a },
 ].filter(Boolean);
 const esTriple = (c) => Array.isArray(c.movs);
