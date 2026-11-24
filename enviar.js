@@ -82,6 +82,14 @@ async function avisosCambios(ahora) {
 
 // Cuando se publica un cuadrante nuevo: aviso a todos con los días que quedan hasta el 25 del mes anterior.
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+// Plazo de cambios: el día 25 del mes anterior (desde las 00:00 ya no se puede), salvo otra fecha puesta por el admin en app/plazos.
+const PLAZOS_BASE = { "2027-01": "2026-11-25" };
+const cierreBase = (m) => { const [y, mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo - 2, 25)).toISOString().slice(0, 10); };
+async function leerPlazos() { try { const s = await db.doc("app/plazos").get(); return (s.exists && s.data().meses) || {}; } catch (e) { return {}; } }
+const cierreDe = (m, P) => P[m] || PLAZOS_BASE[m] || cierreBase(m);
+const menos1 = (k) => new Date(Date.parse(k) - 864e5).toISOString().slice(0, 10);
+const fechaTxt = (k) => `${Number(k.slice(8))} de ${MESES[Number(k.slice(5, 7)) - 1]}`;
+const unir = (l) => l.length > 1 ? l.slice(0, -1).join(", ") + " y " + l[l.length - 1] : l[0];
 async function avisoPublicado(ahora) {
   const ref = db.doc("app/publicado"), snap = await ref.get();
   if (!snap.exists) return;
@@ -90,12 +98,12 @@ async function avisoPublicado(ahora) {
   const nuevos = (d.meses || []).filter((m) => m > cur && !avisados.includes(m)).sort();
   if (!nuevos.length) return;
   const m = nuevos[0], [y, mo] = m.split("-").map(Number);
-  const lim = new Date(Date.UTC(y, mo - 2, 25)).toISOString().slice(0, 10);
-  const dias = Math.round((Date.parse(lim) - Date.parse(hoyK)) / 864e5);
-  const mesN = MESES[mo - 1], limN = MESES[(mo + 10) % 12];
+  const P = await leerPlazos(), cierre = cierreDe(m, P), ult = menos1(cierre);
+  const grupo = nuevos.filter((x) => cierreDe(x, P) === cierre), mesN = unir(grupo.map((x) => MESES[Number(x.slice(5)) - 1]));
+  const dias = Math.round((Date.parse(ult) - Date.parse(hoyK)) / 864e5);
   const body = dias < 0 ? `Ya está colgado el cuadrante de ${mesN}. Entra en la app para verlo.`
-    : dias === 0 ? `Ya está el cuadrante de ${mesN}. Hoy, 25 de ${limN}, es el último día para pedir cambios.`
-    : `Ya está el cuadrante de ${mesN}. Tenéis hasta el 25 de ${limN} para pedir cambios: os quedan ${dias} día${dias > 1 ? "s" : ""}.`;
+    : dias === 0 ? `Ya está el cuadrante de ${mesN}. Hoy, ${fechaTxt(ult)}, es el último día para pedir cambios.`
+    : `Ya está el cuadrante de ${mesN}. Tenéis hasta el ${fechaTxt(ult)} para pedir cambios: os quedan ${dias} día${dias > 1 ? "s" : ""}.`;
   const q = await db.collection("push").get();
   const nombres = [...new Set(q.docs.map((x) => (x.data() || {}).nombre).filter(Boolean))];
   let n = 0;
@@ -121,23 +129,25 @@ async function avisoComunicados(ahora) {
   console.log(`✔ Comunicados avisados: ${nuevos.length} (${n} envíos)`);
 }
 
-// Día 24 (desde las 10:00): "mañana se cierran los cambios" a todos, si ya está colgado el cuadrante del mes siguiente.
+// Último día de plazo (desde las 10:00): "hoy es el último día, mañana se cierran los cambios" a todos. Una vez por fecha de cierre.
 async function avisoCierre(ahora) {
   const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
-  if (hoyK.slice(8) !== "24" || hora < 10) return;
-  const [y, m] = hoyK.split("-").map(Number), sig = `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}`;
-  const ref = db.doc("avisosCierre/" + sig);
+  if (hora < 10) return;
+  const P = await leerPlazos(), cur = hoyK.slice(0, 7);
+  const g = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">", cur + "-31").get();
+  const meses = [...new Set(g.docs.map((d) => d.id.slice(0, 7)).filter((m) => /^\d{4}-\d\d$/.test(m)))].sort();
+  const grupo = meses.filter((m) => menos1(cierreDe(m, P)) === hoyK);
+  if (!grupo.length) return;
+  const cierre = cierreDe(grupo[0], P), ref = db.doc("avisosCierre/" + cierre);
   if ((await ref.get()).exists) return;
-  const hay = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">=", sig + "-01").limit(1).get();
-  if (hay.empty || !hay.docs[0].id.startsWith(sig)) { console.log("Día 24: aún no hay cuadrante de", sig); return; }
-  const mesN = MESES[Number(sig.slice(5)) - 1], actN = MESES[m - 1];
+  const mesN = unir(grupo.map((m) => MESES[Number(m.slice(5)) - 1]));
   const push = await db.collection("push").get();
   const nombres = [...new Set(push.docs.map((x) => (x.data() || {}).nombre).filter(Boolean))];
   let n = 0;
-  for (const p of nombres) n += await enviarA(p, "⏰ Mañana se cierran los cambios", `Mañana, 25 de ${actN}, es el último día para pedir cambios del cuadrante de ${mesN}.`);
-  await ref.set({ fecha: ahora.toISOString(), enviados: n });
-  console.log(`✔ Aviso de cierre (${sig}): ${n}`);
+  for (const p of nombres) n += await enviarA(p, "⏰ Hoy es el último día para pedir cambios", `Mañana, ${fechaTxt(cierre)}, se cierran los cambios de ${mesN}. Lo que no esté aceptado hoy ya no se podrá hacer.`);
+  await ref.set({ fecha: ahora.toISOString(), meses: grupo, enviados: n });
+  console.log(`✔ Aviso de cierre (${cierre}): ${n}`);
 }
 
 // Avisa al administrador si alguien queda con servicio el día que sale de guardia (una vez por fallo).
