@@ -138,9 +138,9 @@ async function avisoCierre(ahora) {
   const g = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">", cur + "-31").get();
   const meses = [...new Set(g.docs.map((d) => d.id.slice(0, 7)).filter((m) => /^\d{4}-\d\d$/.test(m)))].sort();
   const grupo = meses.filter((m) => menos1(cierreDe(m, P)) === hoyK);
-  if (!grupo.length) return;
+  if (!grupo.length) { console.log("Cierre de cambios: hoy no es el último día de plazo de ningún mes (" + meses.map((m) => m + "→" + cierreDe(m, P)).join(", ") + ")."); return; }
   const cierre = cierreDe(grupo[0], P), ref = db.doc("avisosCierre/" + cierre);
-  if ((await ref.get()).exists) return;
+  if ((await ref.get()).exists) { console.log("Cierre de cambios: el aviso del " + cierre + " ya se mandó."); return; }
   const mesN = unir(grupo.map((m) => MESES[Number(m.slice(5)) - 1]));
   const push = await db.collection("push").get();
   const nombres = [...new Set(push.docs.map((x) => (x.data() || {}).nombre).filter(Boolean))];
@@ -184,6 +184,7 @@ const FRASES_I = [
 ];
 
 async function main() {
+  console.log("enviar.js · versión 24-nov (cierre de cambios + cambio doble)");
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
     if (ap.empty) throw new Error("No encuentro tu cuenta de administrador en 'aprobados'.");
