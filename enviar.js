@@ -224,7 +224,7 @@ async function main() {
   await avisoComunicados(ahora).catch((e) => console.error("Comunicados:", e.message || e));
   await avisoCierre(ahora).catch((e) => console.error("Cierre:", e.message || e));
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
-  if (hora < 21 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h)."); return; }
+  if (hora < 20 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h). Sale entre las 20:00 y las 22:59."); return; }
   const hoy = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
   const d = new Date(hoy + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + 1);
   const k = d.toISOString().slice(0, 10);
