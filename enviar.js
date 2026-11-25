@@ -22,11 +22,20 @@ async function tokensDe(nombre) {
   const q = await db.collection("push").where("nombre", "==", nombre).get();
   return q.docs.filter((d) => d.data().token).map((d) => ({ token: d.data().token, ref: d.ref }));
 }
+// Apunta en cada móvil el último aviso (o el fallo), para que el administrador vea en la app que les llegan.
+async function anotar(refs, responses, title) {
+  const now = new Date().toISOString();
+  await Promise.all(responses.map((x, i) => {
+    if (x.success) return refs[i].update({ ultimo: now, ultimoTitulo: title, fallo: admin.firestore.FieldValue.delete() }).catch(() => {});
+    if (x.error && /registration-token-not-registered|invalid-registration-token/.test(x.error.code)) return refs[i].delete().catch(() => {});
+    return refs[i].update({ fallo: now, falloMotivo: String((x.error && x.error.code) || "desconocido") }).catch(() => {});
+  }));
+}
 async function enviarA(nombre, title, body) {
   const ts = await tokensDe(nombre);
   if (!ts.length) return 0;
   const r = await admin.messaging().sendEach(ts.map((t) => msg(t.token, title, body)));
-  await Promise.all(r.responses.map((x, i) => !x.success && x.error && /registration-token-not-registered|invalid-registration-token/.test(x.error.code) ? ts[i].ref.delete() : null));
+  await anotar(ts.map((t) => t.ref), r.responses, title);
   return r.successCount;
 }
 
@@ -206,13 +215,14 @@ const FRASES_I = [
 ];
 
 async function main() {
-  console.log("enviar.js · versión 25-nov (caducados + cierre + cambio doble)");
+  console.log("enviar.js · versión 25-nov-b (último aviso por móvil + víspera desde las 20:00)");
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
     if (ap.empty) throw new Error("No encuentro tu cuenta de administrador en 'aprobados'.");
     const p = await db.doc("push/" + ap.docs[0].id).get();
     if (!p.exists) throw new Error("Primero pulsa 'Activar avisos' en la app de tu móvil.");
     await admin.messaging().send(msg(p.data().token, "🪖 Mañana tienes guardia (prueba)", frase()));
+    await p.ref.update({ ultimo: new Date().toISOString(), ultimoTitulo: "🧪 Aviso de prueba" }).catch(() => {});
     console.log("✔ Aviso de prueba enviado a", ADMIN_EMAIL);
     return;
   }
@@ -234,19 +244,19 @@ async function main() {
   if (!g.exists) { console.log("No hay cuadrante para", k); await marca.set({ enviados: 0, fecha: ahora.toISOString() }); return; }
   const s = g.data().s || {};
   const push = await db.collection("push").get();
-  const mensajes = [], refs = [];
+  const mensajes = [], refs = [], titulos = [];
   for (const doc of push.docs) {
     const p = doc.data(), t = p && p.token && s[p.nombre];
     if (t === "G") mensajes.push(msg(p.token, "🪖 Mañana tienes guardia", frase()));
     else if (t && /(^|\/)I($|\/)|^I\//.test(t)) mensajes.push(msg(p.token, "🌙 Mañana tienes imaginaria", FRASES_I[Math.floor(Math.random() * FRASES_I.length)]));
     else continue;
-    refs.push(doc.ref);
+    refs.push(doc.ref); titulos.push(t === "G" ? "🪖 Mañana tienes guardia" : "🌙 Mañana tienes imaginaria");
   }
   let ok = 0;
   if (mensajes.length) {
     const r = await admin.messaging().sendEach(mensajes);
     ok = r.successCount;
-    await Promise.all(r.responses.map((x, i) => !x.success && x.error && /registration-token-not-registered|invalid-registration-token/.test(x.error.code) ? refs[i].delete() : null));
+    await Promise.all(r.responses.map((x, i) => anotar([refs[i]], [x], titulos[i])));
   }
   await marca.set({ enviados: ok, fecha: ahora.toISOString() });
   console.log(`✔ ${k}: ${ok} avisos enviados de ${mensajes.length}.`);
