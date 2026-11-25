@@ -40,13 +40,35 @@ const movsDe = (c) => Array.isArray(c.movs) ? c.movs : [
 const esTriple = (c) => Array.isArray(c.movs);
 
 // Respuestas y peticiones de cambio de los últimos 2 días que aún no se han avisado.
+// Pendientes que ya no se pueden aceptar (plazo cerrado o día pasado): se marcan como caducados.
+async function caducarPendientes(ahora) {
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" }), P = await leerPlazos();
+  const q = await db.collection("cambios").where("estado", "==", "pendiente").get();
+  let n = 0;
+  for (const d of q.docs) {
+    const ms = movsDe(d.data()).map((m) => m.dia).filter(Boolean);
+    const pasado = ms.some((k) => k < hoyK), plazo = ms.some((k) => hoyK >= cierreDe(k.slice(0, 7), P));
+    if (!pasado && !plazo) continue;
+    await d.ref.update({ estado: "caducado", resuelto: ahora.toISOString(), motivo: pasado ? "pasado" : "plazo" });
+    n++;
+  }
+  if (n) console.log(`✔ Pendientes caducados: ${n}`);
+}
+
 async function avisosCambios(ahora) {
   const desde = new Date(ahora.getTime() - 2 * 864e5).toISOString();
   let n = 0;
   const resp = await db.collection("cambios").where("resuelto", ">=", desde).get();
   for (const doc of resp.docs) {
     const c = doc.data();
-    if (c.avisadoResp || !["aceptado", "rechazado"].includes(c.estado)) continue;
+    if (c.avisadoResp || !["aceptado", "rechazado", "caducado"].includes(c.estado)) continue;
+    if (c.estado === "caducado") {
+      const m0c = movsDe(c)[0] || {}, txt = c.motivo === "pasado" ? "el día ya pasó sin que se aceptara" : "se cerró el plazo de cambios sin que se aceptara";
+      const a = esTriple(c) ? [c.solicita, c.otro, c.tercero] : [c.solicita];
+      for (const p of a) n += await enviarA(p, "⌛ Cambio caducado", `Tu cambio de la ${servicio(m0c.t)} del ${fechaCorta(m0c.dia)}${esTriple(c) ? " (a tres)" : ` con ${c.otro}`} ha caducado: ${txt}.`);
+      await doc.ref.update({ avisadoResp: true });
+      continue;
+    }
     const m0 = movsDe(c)[0] || {}, quien = c.porAdmin && c.estado === "aceptado" ? "El administrador" : c.otro;
     if (esTriple(c)) {
       for (const p of [c.solicita, c.otro, c.tercero]) {
@@ -184,7 +206,7 @@ const FRASES_I = [
 ];
 
 async function main() {
-  console.log("enviar.js · versión 24-nov (cierre de cambios + cambio doble)");
+  console.log("enviar.js · versión 25-nov (caducados + cierre + cambio doble)");
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
     if (ap.empty) throw new Error("No encuentro tu cuenta de administrador en 'aprobados'.");
@@ -195,6 +217,7 @@ async function main() {
     return;
   }
   const ahora = new Date();
+  await caducarPendientes(ahora).catch((e) => console.error("Caducar:", e.message || e));
   await avisosCambios(ahora);
   await avisosFallos(ahora).catch((e) => console.error("Fallos:", e.message || e));
   await avisoPublicado(ahora).catch((e) => console.error("Publicado:", e.message || e));
