@@ -31,11 +31,22 @@ async function anotar(refs, responses, title) {
     return refs[i].update({ fallo: now, falloMotivo: String((x.error && x.error.code) || "desconocido") }).catch(() => {});
   }));
 }
+let ENVIADOS = 0; const ERRORES = [];
+{ const ce = console.error; console.error = (...a) => { ERRORES.push(a.map((x) => String(x && x.message || x)).join(" ").slice(0, 160)); ce(...a); }; }
+// 🩺 Deja en app/estado cuándo pasó, si hubo errores y cuántos avisos se mandaron (lo ve el admin en la app).
+async function guardarEstado(ahora) {
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" }), ref = db.doc("app/estado");
+  const prev = (await ref.get()).data() || {}, ev = prev.envios || {};
+  const ayerK = (() => { const d = new Date(hoyK + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); })();
+  const envios = ev.dia === hoyK ? { dia: hoyK, hoy: (ev.hoy || 0) + ENVIADOS, ayer: ev.ayer || 0 } : { dia: hoyK, hoy: ENVIADOS, ayer: ev.dia === ayerK ? (ev.hoy || 0) : 0 };
+  await ref.set({ ultimaPasada: ahora.toISOString(), version: VERSION_ROBOT, errores: ERRORES.slice(0, 5), envios }, { merge: true });
+}
 async function enviarA(nombre, title, body) {
   const ts = await tokensDe(nombre);
   if (!ts.length) return 0;
   const r = await admin.messaging().sendEach(ts.map((t) => msg(t.token, title, body)));
   await anotar(ts.map((t) => t.ref), r.responses, title);
+  ENVIADOS += r.successCount;
   return r.successCount;
 }
 
@@ -280,8 +291,9 @@ const FRASES_I = [
   "Mañana imaginaria. Que no suene el teléfono… pero si suena, estás listo 📞",
 ];
 
+const VERSION_ROBOT = "26-nov-c";
 async function main() {
-  console.log("enviar.js · versión 26-nov-b (bolsa de cambios + resumen semanal)");
+  console.log(`enviar.js · versión ${VERSION_ROBOT} (estado del sistema + bolsa de cambios + resumen semanal)`);
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
     if (ap.empty) throw new Error("No encuentro tu cuenta de administrador en 'aprobados'.");
@@ -323,10 +335,12 @@ async function main() {
   let ok = 0;
   if (mensajes.length) {
     const r = await admin.messaging().sendEach(mensajes);
-    ok = r.successCount;
+    ok = r.successCount; ENVIADOS += ok;
     await Promise.all(r.responses.map((x, i) => anotar([refs[i]], [x], titulos[i])));
   }
   await marca.set({ enviados: ok, fecha: ahora.toISOString() });
   console.log(`✔ ${k}: ${ok} avisos enviados de ${mensajes.length}.`);
 }
-main().catch((e) => { console.error("Error:", e.message || e); process.exit(1); });
+main()
+  .then(async () => { if (!prueba) await guardarEstado(new Date()).catch((e) => console.log("Estado:", e.message || e)); })
+  .catch(async (e) => { console.error("Error:", e.message || e); await guardarEstado(new Date()).catch(() => {}); process.exit(1); });
