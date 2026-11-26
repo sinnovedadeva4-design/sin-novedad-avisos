@@ -205,6 +205,33 @@ async function avisosFallos(ahora) {
   if (n) console.log(`✔ Avisos de fallos al administrador: ${n}`);
 }
 
+// 📋 Lunes desde las 9:00: resumen de la semana para el administrador (una vez por semana).
+async function resumenSemanal(ahora) {
+  const dia = fmt(ahora, { weekday: "short" }), hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
+  if (!/^(lun|mon)/i.test(dia) || hora < 9) return;
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" }), ref = db.doc("resumenes/" + hoyK);
+  if ((await ref.get()).exists) return;
+  const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
+  if (ap.empty) return;
+  const yo = ap.docs[0].data().nombre, desde = new Date(ahora.getTime() - 7 * 864e5).toISOString();
+  const res = await db.collection("cambios").where("resuelto", ">=", desde).get();
+  const est = (x) => res.docs.filter((d) => (d.data() || {}).estado === x).length;
+  const pend = (await db.collection("cambios").where("estado", "==", "pendiente").get()).size;
+  // fallos de descanso en lo que queda de cuadrante
+  const q = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">=", hoyK).get();
+  const g = {}; q.docs.forEach((d) => { g[d.id] = (d.data() || {}).s || {}; });
+  const prev = (k) => { const d = new Date(k + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+  let fallos = 0;
+  for (const [k, s] of Object.entries(g)) { const ant = g[prev(k)]; if (!ant) continue; for (const [p, t] of Object.entries(s)) if (["G", "I", "I/E"].includes(t) && ant[p] === "G") fallos++; }
+  const partes = [`${est("aceptado")} cambio${est("aceptado") === 1 ? "" : "s"} aprobado${est("aceptado") === 1 ? "" : "s"}`, `${pend} pendiente${pend === 1 ? "" : "s"}`];
+  if (est("rechazado")) partes.push(`${est("rechazado")} rechazado${est("rechazado") === 1 ? "" : "s"}`);
+  if (est("caducado")) partes.push(`${est("caducado")} caducado${est("caducado") === 1 ? "" : "s"}`);
+  const body = `Última semana: ${partes.join(" · ")}. ${fallos ? `⚠️ ${fallos} fallo${fallos === 1 ? "" : "s"} de descanso en el cuadrante.` : "✔ Sin fallos de descanso en el cuadrante."}`;
+  const n = await enviarA(yo, "📋 Resumen de la semana", body);
+  await ref.set({ fecha: ahora.toISOString(), texto: body, enviados: n });
+  console.log(`✔ Resumen semanal: ${body}`);
+}
+
 const FRASES_I = [
   "Que no se te olvide: mañana te toca imaginaria. ¡Sin novedad! 🫡",
   "Mañana imaginaria: móvil con batería y el uniforme a mano 🔋",
@@ -215,7 +242,7 @@ const FRASES_I = [
 ];
 
 async function main() {
-  console.log("enviar.js · versión 25-nov-b (último aviso por móvil + víspera desde las 20:00)");
+  console.log("enviar.js · versión 26-nov (resumen semanal + último aviso + víspera 20:00)");
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
     if (ap.empty) throw new Error("No encuentro tu cuenta de administrador en 'aprobados'.");
@@ -233,6 +260,7 @@ async function main() {
   await avisoPublicado(ahora).catch((e) => console.error("Publicado:", e.message || e));
   await avisoComunicados(ahora).catch((e) => console.error("Comunicados:", e.message || e));
   await avisoCierre(ahora).catch((e) => console.error("Cierre:", e.message || e));
+  await resumenSemanal(ahora).catch((e) => console.error("Resumen:", e.message || e));
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
   if (hora < 20 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h). Sale entre las 20:00 y las 22:59."); return; }
   const hoy = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
