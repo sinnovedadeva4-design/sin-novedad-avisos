@@ -232,6 +232,45 @@ async function resumenSemanal(ahora) {
   console.log(`✔ Resumen semanal: ${body}`);
 }
 
+// 🔁 Bolsa de cambios: si dos compañeros quieren soltar servicios que encajan entre sí, se les avisa (una vez por pareja de días).
+const AUSENCIA = new Set(["#ed7d31", "#92d050", "#808080", "#f2f2f2", "#4472c4", "#ccccff", "#f4a6a6", "#000000"]);
+async function avisosBolsa(ahora) {
+  const hoyK = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" }), P = await leerPlazos();
+  const desde = (() => { const d = new Date(hoyK + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); })();
+  const q = await db.collection("guardias").where(admin.firestore.FieldPath.documentId(), ">=", desde).get();
+  const G = {}; q.docs.forEach((d) => { G[d.id] = d.data() || {}; });
+  const lib = {}; (await db.collection("libres").get()).docs.forEach((d) => { const v = d.data() || {}; if (v.nombre) lib[v.nombre] = v.dias || []; });
+  const ocup = new Set(); (await db.collection("cambios").where("estado", "==", "pendiente").get()).docs.forEach((d) => movsDe(d.data()).forEach((m) => ocup.add(m.dia + "|" + m.sale)));
+  const s = (k, p) => ((G[k] || {}).s || {})[p] || null, aus = (k, p) => AUSENCIA.has((((G[k] || {}).f) || {})[p]);
+  const sum = (k, n) => { const d = new Date(k + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const W = [];
+  for (const [k, d] of Object.entries(G)) {
+    if (k < hoyK || hoyK >= cierreDe(k.slice(0, 7), P)) continue;
+    for (const [p, t] of Object.entries(d.s || {})) {
+      if (!["G", "I"].includes(t) || ocup.has(k + "|" + p)) continue;
+      if ((d.busca || []).includes(p) || (lib[p] || []).includes(k)) W.push([p, k, t]);
+    }
+  }
+  // descanso: tras una guardia, el día siguiente nada; con el cambio aplicado
+  const fin = (p, k, mv) => { let t = s(k, p); for (const m of mv) if (m.dia === k && m.sale === p) t = null; for (const m of mv) if (m.dia === k && m.entra === p) t = m.t; return t; };
+  const okDescanso = (mv) => mv.every((m) => { const p = m.entra, a = sum(m.dia, -1), b = sum(m.dia, 1); return fin(p, a, mv) !== "G" && !(m.t === "G" && ["G", "I", "I/E"].includes(fin(p, b, mv))); });
+  const push = await db.collection("push").get(), conAvisos = new Set(push.docs.map((x) => (x.data() || {}).nombre).filter(Boolean));
+  let n = 0;
+  for (let i = 0; i < W.length; i++) for (let j = i + 1; j < W.length; j++) {
+    const [A, a, ta] = W[i], [B, b, tb] = W[j];
+    if (A === B || ta !== tb || a === b || s(a, B) || s(b, A) || aus(a, B) || aus(b, A)) continue;
+    const mv = [{ dia: a, t: ta, sale: A, entra: B }, { dia: b, t: tb, sale: B, entra: A }];
+    if (!okDescanso(mv)) continue;
+    const id = [a, A, b, B].join("_").replace(/[^\w-]/g, "_"), ref = db.doc("bolsaAvisos/" + id);
+    if ((await ref.get()).exists) continue;
+    const sv = servicio(ta);
+    if (conAvisos.has(A)) n += await enviarA(A, "🔁 Te encaja un cambio", `Con ${B}: tú le haces la ${sv} del ${fechaCorta(b)} y te hace la tuya del ${fechaCorta(a)}. Míralo en Mis días.`);
+    if (conAvisos.has(B)) n += await enviarA(B, "🔁 Te encaja un cambio", `Con ${A}: tú le haces la ${sv} del ${fechaCorta(a)} y te hace la tuya del ${fechaCorta(b)}. Míralo en Mis días.`);
+    await ref.set({ fecha: ahora.toISOString() });
+  }
+  if (n) console.log(`✔ Avisos de la bolsa de cambios: ${n}`);
+}
+
 const FRASES_I = [
   "Que no se te olvide: mañana te toca imaginaria. ¡Sin novedad! 🫡",
   "Mañana imaginaria: móvil con batería y el uniforme a mano 🔋",
@@ -242,7 +281,7 @@ const FRASES_I = [
 ];
 
 async function main() {
-  console.log("enviar.js · versión 26-nov (resumen semanal + último aviso + víspera 20:00)");
+  console.log("enviar.js · versión 26-nov-b (bolsa de cambios + resumen semanal)");
   if (prueba) {
     const ap = await db.collection("aprobados").where("email", "==", ADMIN_EMAIL).get();
     if (ap.empty) throw new Error("No encuentro tu cuenta de administrador en 'aprobados'.");
@@ -261,6 +300,7 @@ async function main() {
   await avisoComunicados(ahora).catch((e) => console.error("Comunicados:", e.message || e));
   await avisoCierre(ahora).catch((e) => console.error("Cierre:", e.message || e));
   await resumenSemanal(ahora).catch((e) => console.error("Resumen:", e.message || e));
+  await avisosBolsa(ahora).catch((e) => console.error("Bolsa:", e.message || e));
   const hora = Number(fmt(ahora, { hour: "2-digit", hour12: false }));
   if (hora < 20 || hora > 22) { console.log("Recordatorio de la víspera: fuera de hora en España (" + hora + "h). Sale entre las 20:00 y las 22:59."); return; }
   const hoy = fmt(ahora, { year: "numeric", month: "2-digit", day: "2-digit" });
